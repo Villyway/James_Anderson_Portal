@@ -1,0 +1,15 @@
+asgiref==3.8.1  # Required by Django
+certifi==2025.4.26  # For secure HTTP requests (if needed for external APIs)
+charset-normalizer==3.4.2  # For handling encodings (requests dependency)
+django==5.0.6  # Your Django version (will address compatibility later)
+django-mssql-backend  # SQL Server backend (version to be determined)
+idna==3.10  # For URL handling (requests dependency)
+pyodbc==5.2.0  # For SQL Server connectivity
+python-dateutil==2.9.0.post0  # For date handling (used in your views.py)
+python-dotenv==1.1.0  # For environment variables (if using .env files)
+pytz==2025.2  # For timezone support (used in your views.py)
+requests==2.32.3  # For HTTP requests (if needed for external APIs)
+sqlparse==0.5.3  # Required by Django
+typing_extensions==4.13.2  # For type hints (Django dependency)
+tzdata==2025.2  # For Windows timezone support (used in your views.py)
+urllib3==1.26.2  # For HTTP requests (requests dependency)
