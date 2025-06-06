@@ -109,13 +109,14 @@ DATABASES = {
         'NAME': 'db.sqlite3',
     },
     'backup': {
-        'ENGINE': 'mssql',  # Use the engine provided by mssql-django
+        'ENGINE': 'mssql',
         'NAME': 'seminar',
-        'HOST': '72.190.10.217',  # e.g., 'localhost' or 'YOUR_SERVER\SQLEXPRESS'
-        'USER': 'seminar',  # Leave blank for Windows Authentication
-        'PASSWORD': 'seminar',  # Leave blank for Windows Authentication
+        'HOST': '72.190.10.217',
+        'USER': 'seminar',
+        'PASSWORD': 'seminar',
         'OPTIONS': {
             'driver': 'ODBC Driver 17 for SQL Server',
+            'timeout': 30,  # Set a 30-second timeout
         },
     }
 }
