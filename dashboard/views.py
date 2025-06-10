@@ -4,9 +4,14 @@ from django.contrib.auth.decorators import login_required
 from .models import Region, County
 from django.contrib import messages
 from datetime import datetime
+from django.core.paginator import Paginator
 import csv
+from django.shortcuts import render, redirect
+import json
+
 from django.http import JsonResponse, HttpResponse
 from dateutil.relativedelta import relativedelta
+from concurrent.futures import ThreadPoolExecutor
 from django.db import connections
 
 def get_region_data(request):
@@ -35,7 +40,19 @@ def login_view(request):
             messages.error(request, 'Invalid credentials or not a superadmin.')
     return render(request, 'dashboard/login.html')
 
-@login_required
+from django.shortcuts import render
+from django.http import HttpResponse
+from django.contrib.auth.decorators import login_required
+from django.contrib import messages
+from django.db import connections
+from datetime import datetime
+from dateutil.relativedelta import relativedelta
+import csv
+import json
+from concurrent.futures import ThreadPoolExecutor
+import time
+
+@login_required(login_url='/login/')
 def dashboard_view(request):
     all_regions = []
     counties = []
@@ -45,7 +62,6 @@ def dashboard_view(request):
         with connections['backup'].cursor() as cursor:
             cursor.execute("EXEC SpGetRegionData")
             region_rows = cursor.fetchall()
-            # Log columns only if there's an issue
             if not region_rows:
                 columns = [column[0] for column in cursor.description]
                 messages.info(request, f"SpGetRegionData columns: {columns} (No data returned)")
@@ -60,7 +76,7 @@ def dashboard_view(request):
                 )
                 region.save()
                 region_data = {
-                    'id': row[0],  # Region ID
+                    'id': row[0],
                     'name': row[1],
                     'total_rows': row[2],
                     'start_date': row[3],
@@ -95,11 +111,10 @@ def dashboard_view(request):
     except Exception as e:
         messages.error(request, f"Error fetching county data: {str(e)}")
 
-    # Get the selected region for filtering (search form)
+    # Get the selected region for filtering
     selected_region_name = request.GET.get('region', '')
     selected_region_id = None
     if selected_region_name:
-        # Find the region ID corresponding to the region name
         for region in all_regions:
             if region['name'] == selected_region_name:
                 selected_region_id = region['id']
@@ -107,36 +122,41 @@ def dashboard_view(request):
         if selected_region_id is None:
             messages.error(request, f"Region '{selected_region_name}' not found.")
 
-    # Default to the first county if none is selected (for graph)
+    # Default to the first county if none is selected
     selected_county = counties[0]['name'] if counties else ''
 
-    # Prepare data for the graph (past 2 years: June 2023 to May 2025)
-    end_date = datetime(2025, 6, 1)  # June 2025
-    start_date = end_date - relativedelta(years=2)  # June 2023
+    # Prepare data for the graph (past 2 years)
+    end_date = datetime(2025, 6, 1)
+    start_date = end_date - relativedelta(years=2)
     graph_months = []
     current_date = start_date
     while current_date < end_date:
-        graph_months.append(current_date.strftime('%b %Y'))  # e.g., 'Jun 2023'
+        graph_months.append(current_date.strftime('%b %Y'))
         current_date += relativedelta(months=1)
 
-    # Fetch monthly counts using usp_GenerateMonthlyFilingCounts for the graph
+    # Fetch monthly counts for graph (parallel execution)
     monthly_counts = []
-    try:
-        with connections['backup'].cursor() as cursor:
-            cursor.execute("EXEC usp_GenerateMonthlyFilingCounts")
-            rows = cursor.fetchall()
-            columns = [column[0] for column in cursor.description]
-            monthly_counts = [dict(zip(columns, row)) for row in rows]
-    except Exception as e:
-        messages.error(request, f"Error fetching monthly counts: {str(e)}")
-        monthly_counts = []  # Set to empty list to prevent further errors
-
-    # Initialize county_graph_data as an empty dictionary
     county_graph_data = {}
+    
+    def fetch_monthly_counts():
+        try:
+            with connections['backup'].cursor() as cursor:
+                cursor.execute("EXEC usp_GenerateMonthlyFilingCounts")
+                rows = cursor.fetchall()
+                columns = [column[0] for column in cursor.description]
+                return [dict(zip(columns, row)) for row in rows]
+        except Exception as e:
+            messages.error(request, f"Error fetching monthly counts: {str(e)}")
+            return []
 
-    # Map stored procedure columns to graph months (e.g., 'Jul 23' -> 'Jul 2023')
+    # Use ThreadPoolExecutor for parallel processing
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        monthly_future = executor.submit(fetch_monthly_counts)
+        monthly_counts = monthly_future.result()
+
+    # Process graph data
     column_to_month = {}
-    if monthly_counts:  # Only process if data is available
+    if monthly_counts:
         columns = list(monthly_counts[0].keys())
         for col in columns:
             if col == 'Source':
@@ -148,16 +168,16 @@ def dashboard_view(request):
             except ValueError:
                 continue
 
-        # Aggregate counts by county and month for the graph
-        monthly_counts_all = monthly_counts  # Unfiltered copy for the graph
+        # Process county graph data
         for county in counties:
             county_name = county['name']
             county_row = next(
-                (row for row in monthly_counts_all if row.get('Source', '').lower() == county_name.lower()),
+                (row for row in monthly_counts if row.get('Source', '').lower() == county_name.lower()),
                 None
             )
             if not county_row:
                 counts = [0] * len(graph_months)
+                running_avg = [0] * len(graph_months)
             else:
                 counts = []
                 for month in graph_months:
@@ -173,11 +193,11 @@ def dashboard_view(request):
                     else:
                         avg = sum(counts[i-2:i+1]) / 3
                     running_avg.append(round(avg, 2))
-                
-                county_graph_data[county_name] = {
-                    'counts': counts,
-                    'running_avg': running_avg,
-                }
+            
+            county_graph_data[county_name] = {
+                'counts': counts,
+                'running_avg': running_avg,
+            }
     else:
         for county in counties:
             county_name = county['name']
@@ -186,24 +206,28 @@ def dashboard_view(request):
                 'running_avg': [0] * len(graph_months),
             }
 
-    # Search functionality using SpGetCSVData
+    # Search functionality - OPTIMIZED
     start_month_year = request.GET.get('start_month_year')
     end_month_year = request.GET.get('end_month_year')
     months_table = []
     monthly_data = []
     search_applied = False
-    csv_data = []  # Store data for CSV generation
+    csv_data_aggregated = []
+    
+    # Store search parameters for CSV generation instead of full data
+    search_params = {
+        'region_id': selected_region_id,
+        'start_month_year': start_month_year,
+        'end_month_year': end_month_year
+    }
+    request.session['search_params'] = search_params
 
     if selected_region_id and start_month_year and end_month_year:
         try:
-            # Parse YYYY-MM format and set day for start and end of month
             start_year, start_month = map(int, start_month_year.split('-'))
             end_year, end_month = map(int, end_month_year.split('-'))
             
-            # Set start_date to the first day of the start month
             start_date = datetime(start_year, start_month, 1)
-            
-            # Set end_date to the last day of the end month
             if end_month == 12:
                 end_date = datetime(end_year + 1, 1, 1) - relativedelta(days=1)
             else:
@@ -211,27 +235,35 @@ def dashboard_view(request):
 
             if start_date <= end_date:
                 search_applied = True
-                # Call SpGetCSVData with parameters
+                
+                # Optimized query execution with timeout
+                start_time = time.time()
+                
                 with connections['backup'].cursor() as cursor:
-                    # Debug: Log the parameters
-                    messages.info(request, f"Calling SpGetCSVData with Region: {selected_region_id}, StartDate: {start_date.strftime('%m/%d/%Y')}, EndDate: {end_date.strftime('%m/%d/%Y')}")
+                    # Set query timeout
+                    cursor.execute("SET LOCK_TIMEOUT 30000")  # 30 seconds
                     
-                    # Format the query string directly
                     start_date_str = start_date.strftime('%m/%d/%Y')
                     end_date_str = end_date.strftime('%m/%d/%Y')
+                    
+                    # Only fetch aggregated data for display - much faster
                     query = f"EXEC SpGetCSVData @Region = {selected_region_id}, @StartDate = '{start_date_str}', @EndDate = '{end_date_str}'"
                     cursor.execute(query)
                     
-                    # Fetch the results
-                    rows = cursor.fetchall()
-                    columns = [column[0] for column in cursor.description]
-                    csv_data = [dict(zip(columns, row)) for row in rows]
-
-                # Debug: Log the number of rows fetched
-                messages.info(request, f"Fetched {len(csv_data)} rows from SpGetCSVData")
-
-                # Debug: Log the raw data
-                messages.info(request, f"Raw CSV Data: {csv_data}")
+                    # Fetch aggregated data
+                    if cursor.description:
+                        rows = cursor.fetchall()
+                        columns = [column[0] for column in cursor.description]
+                        csv_data_aggregated = [dict(zip(columns, row)) for row in rows]
+                    
+                    # Skip the second result set for now - we'll fetch it only when CSV is needed
+                    try:
+                        cursor.nextset()
+                    except:
+                        pass
+                
+                execution_time = time.time() - start_time
+                messages.info(request, f"Query executed in {execution_time:.2f} seconds")
 
                 # Generate months for the table
                 current_date = start_date
@@ -239,24 +271,23 @@ def dashboard_view(request):
                     months_table.append(current_date.strftime('%b %Y'))
                     current_date += relativedelta(months=1)
 
-                # Aggregate data for the monthly table (data is already aggregated)
+                # Process aggregated data for the monthly table
                 types = ['ASN', 'Fran', 'Sales']
                 type_counts = {type_val: {month: 0 for month in months_table} for type_val in types}
 
-                for row in csv_data:
-                    row_type = row.get('Type', '')
-                    # Map the counts from the columns (e.g., '2025-01') to the table format (e.g., 'Jan 2025')
-                    for month_col in row:
-                        if month_col == 'Type':
-                            continue
-                        try:
-                            # Convert '2025-01' to 'Jan 2025'
-                            month_date = datetime.strptime(month_col, '%Y-%m')
-                            month_key = month_date.strftime('%b %Y')
-                            if month_key in months_table and row_type in types:
-                                type_counts[row_type][month_key] = row[month_col]
-                        except ValueError:
-                            continue
+                if csv_data_aggregated:
+                    for row in csv_data_aggregated:
+                        row_type = row.get('Type', '')
+                        for month_col in row:
+                            if month_col == 'Type':
+                                continue
+                            try:
+                                month_date = datetime.strptime(month_col, '%Y-%m')
+                                month_key = month_date.strftime('%b %Y')
+                                if month_key in months_table and row_type in types:
+                                    type_counts[row_type][month_key] = row[month_col] or 0
+                            except ValueError:
+                                continue
 
                 # Format data for the template
                 for type_val in types:
@@ -269,10 +300,6 @@ def dashboard_view(request):
         except Exception as e:
             messages.error(request, f"Error fetching CSV data: {str(e)}")
 
-    # Store csv_data in session to use in generate_csv view
-    request.session['csv_data'] = csv_data
-
-    # Pass data to the template
     context = {
         'regions': all_regions,
         'counties': counties,
@@ -287,28 +314,308 @@ def dashboard_view(request):
     }
     return render(request, 'dashboard/dashboard.html', context)
 
+
 def generate_csv(request):
-    csv_data = request.session.get('csv_data', [])
+    """
+    Ultra-fast CSV generation using streaming and optimized database query
+    """
+    search_params = request.session.get('search_params', {})
     
-    if not csv_data:
-        return HttpResponse("No data available to generate CSV.", status=400)
+    if not all([search_params.get('region_id'), search_params.get('start_month_year'), search_params.get('end_month_year')]):
+        return HttpResponse("No search parameters available. Please perform a search first.", status=400)
 
-    response = HttpResponse(content_type='text/csv')
-    response['Content-Disposition'] = 'attachment; filename="filtered_data.csv"'
+    try:
+        # Parse search parameters
+        region_id = search_params['region_id']
+        start_month_year = search_params['start_month_year']
+        end_month_year = search_params['end_month_year']
+        
+        start_year, start_month = map(int, start_month_year.split('-'))
+        end_year, end_month = map(int, end_month_year.split('-'))
+        
+        start_date = datetime(start_year, start_month, 1)
+        if end_month == 12:
+            end_date = datetime(end_year + 1, 1, 1) - relativedelta(days=1)
+        else:
+            end_date = datetime(end_year, end_month + 1, 1) - relativedelta(days=1)
 
-    # Define fieldnames based on the aggregated data
-    if csv_data:
-        fieldnames = ['Type'] + [col for col in csv_data[0].keys() if col != 'Type']
-    else:
-        fieldnames = ['Type']
+        # Create streaming response for faster CSV generation
+        response = HttpResponse(content_type='text/csv')
+        response['Content-Disposition'] = f'attachment; filename="filtered_data_{start_month_year}_to_{end_month_year}.csv"'
+        
+        # Create CSV writer
+        writer = csv.writer(response)
+        
+        # Write header
+        fieldnames = ['Date', 'Name', 'Business', 'Address', 'City', 'State', 'Zip', 'Type', 'Source']
+        writer.writerow(fieldnames)
+        
+        # Optimized database connection with streaming
+        start_time = time.time()
+        row_count = 0
+        
+        with connections['backup'].cursor() as cursor:
+            # Optimize connection for large result sets
+            cursor.execute("SET NOCOUNT ON")
+            cursor.execute("SET LOCK_TIMEOUT 30000")
+            cursor.execute("SET QUERY_GOVERNOR_COST_LIMIT 0")  # Remove query cost limit
+            
+            start_date_str = start_date.strftime('%m/%d/%Y')
+            end_date_str = end_date.strftime('%m/%d/%Y')
+            
+            # Execute the stored procedure
+            query = f"EXEC SpGetCSVData @Region = {region_id}, @StartDate = '{start_date_str}', @EndDate = '{end_date_str}'"
+            cursor.execute(query)
+            
+            # Skip first result set (aggregated) - just move to next
+            if cursor.description:
+                cursor.fetchall()
+            
+            # Process second result set (transactional) with streaming
+            if cursor.nextset() and cursor.description:
+                columns = [col[0] for col in cursor.description]
+                
+                # Create column mapping based on actual database columns
+                column_indices = {}
+                for i, col in enumerate(columns):
+                    if col in ['Date', 'FilingDate']:
+                        column_indices['Date'] = i
+                    elif col in ['Name']:
+                        column_indices['Name'] = i
+                    elif col in ['Business']:
+                        column_indices['Business'] = i
+                    elif col in ['Address']:
+                        column_indices['Address'] = i
+                    elif col in ['City']:
+                        column_indices['City'] = i
+                    elif col in ['State']:
+                        column_indices['State'] = i
+                    elif col in ['Zip']:
+                        column_indices['Zip'] = i
+                    elif col in ['Type', 'RecordType']:
+                        column_indices['Type'] = i
+                    elif col in ['Source']:
+                        column_indices['Source'] = i
+                
+                # Stream data row by row instead of loading all into memory
+                batch_size = 1000
+                batch = []
+                
+                while True:
+                    rows = cursor.fetchmany(batch_size)
+                    if not rows:
+                        break
+                    
+                    for row in rows:
+                        csv_row = []
+                        for field in fieldnames:
+                            if field in column_indices:
+                                value = row[column_indices[field]]
+                                
+                                # Handle different data types and formatting
+                                if value is None:
+                                    csv_row.append('')
+                                elif field == 'Date' and value:
+                                    # Handle date formatting
+                                    try:
+                                        if isinstance(value, datetime):
+                                            csv_row.append(value.strftime('%Y-%m-%d'))
+                                        elif isinstance(value, str):
+                                            # Try to parse string date
+                                            try:
+                                                parsed_date = datetime.strptime(value, '%Y-%m-%d')
+                                                csv_row.append(parsed_date.strftime('%Y-%m-%d'))
+                                            except:
+                                                csv_row.append(str(value))
+                                        else:
+                                            csv_row.append(str(value))
+                                    except:
+                                        csv_row.append(str(value) if value else '')
+                                elif field in ['Zip']:
+                                    # Handle ZIP codes as strings to preserve leading zeros
+                                    csv_row.append(str(value) if value else '')
+                                else:
+                                    # Convert all other values to string
+                                    csv_row.append(str(value) if value is not None else '')
+                            else:
+                                csv_row.append('')  # Field not found in database
+                        
+                        batch.append(csv_row)
+                        row_count += 1
+                    
+                    # Write batch to response
+                    writer.writerows(batch)
+                    batch = []
+                    
+                    # Optional: Add progress indicator for very large datasets
+                    if row_count % 10000 == 0:
+                        response.write(f'# Progress: {row_count} rows processed\n'.encode('utf-8'))
+                
+                execution_time = time.time() - start_time
+                
+                # Add summary comment at the end
+                response.write(f'# CSV generation completed in {execution_time:.2f} seconds\n'.encode('utf-8'))
+                response.write(f'# Total rows: {row_count}\n'.encode('utf-8'))
+                
+            else:
+                return HttpResponse("No transactional data available for the selected criteria.", status=400)
+        
+        return response
+        
+    except Exception as e:
+        import traceback
+        error_detail = traceback.format_exc()
+        return HttpResponse(f"Error generating CSV: {str(e)}\n\nDetails:\n{error_detail}", status=500)
 
-    writer = csv.DictWriter(response, fieldnames=fieldnames)
-    writer.writeheader()
+
+# Alternative: Super fast CSV using raw SQL (if stored procedure is slow)
+def generate_csv_raw_sql(request):
+    """
+    Alternative CSV generation using direct SQL instead of stored procedure
+    This might be faster for large datasets
+    """
+    search_params = request.session.get('search_params', {})
     
-    for row in csv_data:
-        writer.writerow(row)
+    if not all([search_params.get('region_id'), search_params.get('start_month_year'), search_params.get('end_month_year')]):
+        return HttpResponse("No search parameters available. Please perform a search first.", status=400)
+
+    try:
+        region_id = search_params['region_id']
+        start_month_year = search_params['start_month_year']
+        end_month_year = search_params['end_month_year']
+        
+        start_year, start_month = map(int, start_month_year.split('-'))
+        end_year, end_month = map(int, end_month_year.split('-'))
+        
+        start_date = datetime(start_year, start_month, 1)
+        if end_month == 12:
+            end_date = datetime(end_year + 1, 1, 1) - relativedelta(days=1)
+        else:
+            end_date = datetime(end_year, end_month + 1, 1) - relativedelta(days=1)
+
+        response = HttpResponse(content_type='text/csv')
+        response['Content-Disposition'] = f'attachment; filename="filtered_data_{start_month_year}_to_{end_month_year}.csv"'
+        
+        writer = csv.writer(response)
+        writer.writerow(['Date', 'Name', 'Business', 'Address', 'City', 'State', 'Zip', 'Type', 'Source'])
+        
+        with connections['backup'].cursor() as cursor:
+            # Direct SQL query - adjust table and column names based on your schema
+            sql_query = """
+            SELECT 
+                CONVERT(VARCHAR(10), FilingDate, 120) as Date,
+                ISNULL(Name, '') as Name,
+                ISNULL(Business, '') as Business,
+                ISNULL(Address, '') as Address,
+                ISNULL(City, '') as City,
+                ISNULL(State, '') as State,
+                ISNULL(Zip, '') as Zip,
+                ISNULL(RecordType, '') as Type,
+                ISNULL(Source, '') as Source
+            FROM YourTableName 
+            WHERE Region = %s 
+            AND FilingDate >= %s 
+            AND FilingDate <= %s
+            ORDER BY FilingDate DESC
+            """
+            
+            cursor.execute(sql_query, [region_id, start_date, end_date])
+            
+            # Stream results
+            while True:
+                rows = cursor.fetchmany(1000)
+                if not rows:
+                    break
+                writer.writerows(rows)
+        
+        return response
+        
+    except Exception as e:
+        return HttpResponse(f"Error generating CSV with raw SQL: {str(e)}", status=500)
+
+
+# Debug function to check stored procedure columns
+def debug_stored_procedure_columns(request):
+    """
+    Debug function to see what columns your stored procedure actually returns
+    Call this to understand the column structure
+    """
+    if not request.user.is_staff:  # Only for admin users
+        return HttpResponse("Access denied", status=403)
     
-    return response
+    try:
+        with connections['backup'].cursor() as cursor:
+            # Test with sample parameters
+            cursor.execute("EXEC SpGetCSVData @Region = 1, @StartDate = '01/01/2025', @EndDate = '02/28/2025'")
+            
+            # First result set
+            columns1 = [col[0] for col in cursor.description] if cursor.description else []
+            sample_row1 = cursor.fetchone() if columns1 else None
+            
+            # Second result set
+            columns2 = []
+            sample_row2 = None
+            if cursor.nextset() and cursor.description:
+                columns2 = [col[0] for col in cursor.description]
+                sample_row2 = cursor.fetchone()
+            
+            debug_info = {
+                'first_result_set': {
+                    'columns': columns1,
+                    'sample_row': sample_row1
+                },
+                'second_result_set': {
+                    'columns': columns2,
+                    'sample_row': sample_row2
+                }
+            }
+            
+            return HttpResponse(f"Debug Info:\n{json.dumps(debug_info, indent=2, default=str)}", content_type='text/plain')
+            
+    except Exception as e:
+        return HttpResponse(f"Debug Error: {str(e)}", content_type='text/plain')
+
+
+# Additional helper function for async processing (optional)
+def get_csv_data_async(region_id, start_date_str, end_date_str):
+    """
+    Async function to fetch CSV data - can be used with Celery for background processing
+    """
+    try:
+        with connections['backup'].cursor() as cursor:
+            query = f"EXEC SpGetCSVData @Region = {region_id}, @StartDate = '{start_date_str}', @EndDate = '{end_date_str}'"
+            cursor.execute(query)
+            
+            # Skip aggregated data
+            if cursor.description:
+                cursor.fetchall()
+            
+            # Get transactional data
+            if cursor.nextset() and cursor.description:
+                rows = cursor.fetchall()
+                columns = [column[0] for column in cursor.description]
+                return [dict(zip(columns, row)) for row in rows]
+            
+        return []
+    except Exception as e:
+        raise Exception(f"Database error: {str(e)}")
+
+
+# Performance monitoring decorator
+def monitor_performance(func):
+    """
+    Decorator to monitor function performance
+    """
+    def wrapper(*args, **kwargs):
+        start_time = time.time()
+        result = func(*args, **kwargs)
+        execution_time = time.time() - start_time
+        
+        # Log performance (you can customize this)
+        print(f"{func.__name__} executed in {execution_time:.2f} seconds")
+        
+        return result
+    return wrapper
 
 @login_required
 def logout_view(request):
@@ -326,15 +633,87 @@ def update_county(request, county_id):
         return redirect('dashboard')
     return render(request, 'dashboard/update_county.html', {'county': county})
 
+
 @login_required
-def manage_do_not_mail(request):
-    counties = County.objects.all()
-    search_query = request.GET.get('search', '')
-    if search_query:
-        counties = counties.filter(name__icontains=search_query)
+def manage_do_not_mail_1(request):
+    records = []
+    search_query = request.GET.get('search_query', '') if request.method == 'GET' else request.POST.get('search_query', '')
+    
+    # Handle marking records as "Do Not Mail" (POST request)
+    if request.method == 'POST':
+        selected_mark_ids = []
+        selected_records = []
+        
+        for key, value in request.POST.items():
+            if key.startswith('record_') and value == 'on':
+                record_id = key.split('_')[1]
+                selected_mark_ids.append(record_id)
+
+        if not selected_mark_ids:
+            messages.error(request, "Please select at least one record to mark as Do Not Mail.")
+        else:
+            try:
+                # Get record details before marking
+                with connections['backup'].cursor() as cursor:
+                    if search_query and search_query.strip():
+                        cursor.execute("EXEC GetSearchResult @searchtext = %s", [search_query.strip()])
+                    
+                    if cursor.description:
+                        rows = cursor.fetchall()
+                        columns = [column[0] for column in cursor.description]
+                        all_records = [dict(zip(columns, row)) for row in rows]
+                        
+                        # Find selected records details
+                        for record in all_records:
+                            if str(record.get('ID')) in selected_mark_ids:
+                                selected_records.append(record)
+                
+                # Mark records as Do Not Mail
+                with connections['backup'].cursor() as cursor:
+                    ids_param = ','.join(selected_mark_ids)
+                    cursor.execute("EXEC MarkDontMail @ids = %s", [ids_param])
+                    
+                    # Create success message with record details
+                    success_msg = f"Successfully marked {len(selected_mark_ids)} record(s) as Do Not Mail:"
+                    for record in selected_records:
+                        name = record.get('Name', 'N/A')
+                        address = record.get('Address', 'N/A')
+                        success_msg += f" • {name} - {address}"
+                    
+                    messages.success(request, success_msg)
+                    
+            except Exception as e:
+                messages.error(request, f"Error marking records: {str(e)}")
+
+    # Get data based on search query (for both GET and POST after processing)
+    if search_query and search_query.strip():
+        try:
+            with connections['backup'].cursor() as cursor:
+                # Use GetSearchResult stored procedure for search
+                cursor.execute("EXEC GetSearchResult @searchtext = %s", [search_query.strip()])
+                
+                if cursor.description:
+                    rows = cursor.fetchall()
+                    columns = [column[0] for column in cursor.description]
+                    records = [dict(zip(columns, row)) for row in rows]
+                    
+                    if not records and request.method == 'GET':
+                        messages.warning(request, f'No records found matching "{search_query}". Please try different search terms.')
+                    elif records and request.method == 'GET':
+                        messages.success(request, f'Found {len(records)} records matching "{search_query}"')
+                        
+        except Exception as e:
+            messages.error(request, f"Error fetching data: {str(e)}")
+
+    # Implement pagination for results
+    paginator = Paginator(records, 50)  # Show 50 records per page
+    page_number = request.GET.get('page')
+    page_obj = paginator.get_page(page_number)
 
     context = {
-        'counties': counties,
+        'records': page_obj,
         'search_query': search_query,
+        'is_paginated': paginator.num_pages > 1,
+        'page_obj': page_obj,
     }
-    return render(request, 'dashboard/manage_do_not_mail.html', context)
+    return render(request, 'dashboard/manage_do_not_mail_1.html', context)

@@ -1,0 +1,264 @@
+{% load dictionary_tags %}
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Manage Do Not Mail</title>
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
+    <style>
+        body {
+            background: #f8f9fa;
+            font-family: Arial, sans-serif;
+            font-size: 14px;
+        }
+        .navbar {
+            background: #003087;
+            padding: 5px 10px;
+        }
+        .navbar-brand, .nav-link {
+            color: white !important;
+            font-size: 14px;
+        }
+        .container {
+            margin-top: 10px;
+        }
+        .table {
+            width: 100%;
+            margin-bottom: 10px;
+            border-collapse: collapse;
+            font-size: 12px;
+        }
+        .table thead {
+            background: #003087;
+            color: white;
+        }
+        .table th, .table td {
+            padding: 5px;
+            border: 1px solid #dee2e6;
+            vertical-align: middle;
+            text-align: left;
+        }
+        .table-responsive {
+            max-height: 600px;
+            overflow-y: auto;
+        }
+        .table thead th {
+            position: sticky;
+            top: 0;
+            z-index: 10;
+        }
+        .pagination {
+            margin-top: 20px;
+        }
+        .alert-container {
+            margin-bottom: 20px;
+        }
+        #selected-count {
+            font-weight: bold;
+            color: #dc3545;
+        }
+    </style>
+</head>
+<body>
+    <!-- Navigation Bar with Logout -->
+    <nav class="navbar navbar-expand-lg">
+        <div class="container-fluid">
+            <div class="ms-auto">
+                <a class="nav-link" href="{% url 'logout' %}">Logout</a>
+            </div>
+        </div>
+    </nav>
+
+    <div class="container mt-5">
+        <!-- Page Header -->
+        <div class="row mb-4">
+            <div class="col-12">
+                <div class="d-flex align-items-center justify-content-between">
+                    <div>
+                        <h1 class="h2 mb-0 text-primary">
+                            <i class="fas fa-ban me-2"></i>Manage Do Not Mail
+                        </h1>
+                        <p class="text-muted mb-0">Search and manage your do not mail list</p>
+                    </div>
+                    <div class="badge bg-info fs-6">
+                        <i class="fas fa-info-circle me-1"></i>Mail Management
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- Messages -->
+        {% if messages %}
+        <div class="alert-container">
+            {% for message in messages %}
+            <div class="alert alert-{{ message.tags }} alert-dismissible fade show" role="alert">
+                {{ message }}
+                <button type="button" class="btn-close" data-bs-dismiss="alert" aria-label="Close"></button>
+            </div>
+            {% endfor %}
+        </div>
+        {% endif %}
+
+        <!-- Search Form -->
+        <div class="card shadow-sm mb-4">
+            <div class="card-body">
+                <form method="GET" action="{% url 'manage_do_not_mail_1' %}">
+                    <div class="row">
+                        <div class="col-md-8">
+                            <label for="search_query" class="form-label fw-semibold">
+                                <i class="fas fa-search me-1"></i>Search Records
+                            </label>
+                            <input type="text" name="search_query" id="search_query" class="form-control form-control-lg"
+                                   value="{{ search_query|default:'' }}" 
+                                   placeholder="Please enter address or company name to search">
+                            <small class="form-text text-muted">
+                                <i class="fas fa-lightbulb me-1"></i>
+                                Enter company name, address, or any keyword to find records
+                            </small>
+                        </div>
+                        <div class="col-md-4 d-flex align-items-end">
+                            <button type="submit" class="btn btn-primary btn-lg me-2">
+                                <i class="fas fa-search me-1"></i>Search
+                            </button>
+                            <a href="{% url 'manage_do_not_mail_1' %}" class="btn btn-outline-secondary btn-lg">
+                                <i class="fas fa-times me-1"></i>Clear
+                            </a>
+                        </div>
+                    </div>
+                </form>
+            </div>
+        </div>
+
+        <!-- Do Not Mail Form -->
+        {% if records %}
+        <div class="card shadow-sm">
+            <div class="card-header bg-light">
+                <h5 class="mb-0">
+                    <i class="fas fa-table me-2"></i>Search Results
+                    <span class="badge bg-primary ms-2">{{ records.paginator.count }} record(s)</span>
+                </h5>
+            </div>
+            <div class="card-body p-0">
+                <form method="POST" action="{% url 'manage_do_not_mail_1' %}">
+                    {% csrf_token %}
+                    <input type="hidden" name="search_query" value="{{ search_query }}">
+
+                    <!-- Records Table -->
+                    <div class="table-responsive">
+                        <table class="table table-hover mb-0">
+                            <thead class="table-dark">
+                                <tr>
+                                    <th>Name</th>
+                                    <th>Owner</th>
+                                    <th>Address</th>
+                                    <th>City</th>
+                                    <th>State</th>
+                                    <th class="text-center">
+                                        <input type="checkbox" id="select-all" class="form-check-input"> 
+                                        <label for="select-all" class="form-check-label ms-1">Select All</label>
+                                    </th>
+                                </tr>
+                            </thead>
+                            <tbody>
+                                {% for record in records %}
+                                <tr>
+                                    <td class="fw-semibold">{{ record.Name|default:"-" }}</td>
+                                    <td>{{ record.Owner|default:"-" }}</td>
+                                    <td>{{ record.Address|default:"-" }}</td>
+                                    <td>{{ record.City|default:"-" }}</td>
+                                    <td>{{ record.State|default:"-" }}</td>
+                                    <td class="text-center">
+                                        <input type="checkbox" name="record_{{ record.ID }}" value="on" class="form-check-input">
+                                    </td>
+                                </tr>
+                                {% endfor %}
+                            </tbody>
+                        </table>
+                    </div>
+
+                    <!-- Submit Button -->
+                    <div class="card-footer bg-light">
+                        <button type="submit" class="btn btn-danger btn-lg">
+                            <i class="fas fa-ban me-2"></i>Mark Selected as Do Not Mail
+                        </button>
+                    </div>
+                </form>
+            </div>
+        </div>
+        <!-- Pagination -->
+        {% if is_paginated %}
+        <nav aria-label="Page navigation" class="mt-4">
+            <ul class="pagination justify-content-center">
+                {% if page_obj.has_previous %}
+                <li class="page-item">
+                    <a class="page-link" href="?search_query={{ search_query }}&page={{ page_obj.previous_page_number }}">
+                        <i class="fas fa-chevron-left me-1"></i>Previous
+                    </a>
+                </li>
+                {% endif %}
+
+                {% for num in page_obj.paginator.page_range %}
+                {% if page_obj.number == num %}
+                <li class="page-item active">
+                    <span class="page-link">{{ num }}</span>
+                </li>
+                {% else %}
+                <li class="page-item">
+                    <a class="page-link" href="?search_query={{ search_query }}&page={{ num }}">{{ num }}</a>
+                </li>
+                {% endif %}
+                {% endfor %}
+
+                {% if page_obj.has_next %}
+                <li class="page-item">
+                    <a class="page-link" href="?search_query={{ search_query }}&page={{ page_obj.next_page_number }}">
+                        Next<i class="fas fa-chevron-right ms-1"></i>
+                    </a>
+                </li>
+                {% endif %}
+            </ul>
+        </nav>
+        {% endif %}
+
+        {% else %}
+        <div class="card shadow-sm">
+            <div class="card-body text-center py-5">
+                <div class="mb-4">
+                    <i class="fas fa-search fa-3x text-muted"></i>
+                </div>
+                <h5 class="text-muted">Ready to Search</h5>
+                <p class="text-muted mb-0">
+                    Enter an address or company name in the search box above to find records.
+                </p>
+            </div>
+        </div>
+        {% endif %}
+    </div>
+
+    <!-- Add Bootstrap JS and Popper.js for alert functionality -->
+    <script src="https://cdn.jsdelivr.net/npm/@popperjs/core@2.11.6/dist/umd/popper.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/js/bootstrap.min.js"></script>
+
+    <script>
+        // Handle "Select All" checkbox
+        document.getElementById('select-all').addEventListener('change', function() {
+            const checkboxes = document.querySelectorAll('input[type="checkbox"][name^="record_"]');
+            checkboxes.forEach(checkbox => {
+                checkbox.checked = this.checked;
+            });
+        });
+
+        // Auto-dismiss alerts after 4 seconds
+        document.addEventListener('DOMContentLoaded', function() {
+            const alerts = document.querySelectorAll('.alert');
+            alerts.forEach(alert => {
+                setTimeout(() => {
+                    const bsAlert = new bootstrap.Alert(alert);
+                    bsAlert.close();
+                }, 4000); // 4000ms = 4 seconds
+            });
+        });
+    </script>
+</body>
+</html>

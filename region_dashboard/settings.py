@@ -70,39 +70,6 @@ TEMPLATES = [
 WSGI_APPLICATION = 'region_dashboard.wsgi.application'
 
 
-# Database
-# https://docs.djangoproject.com/en/5.2/ref/settings/#databases
-
-# DATABASES = {
-#     'default': {
-#         'ENGINE': 'django.db.backends.sqlite3',
-#         'NAME': BASE_DIR / 'db.sqlite3',
-#     }
-# Local Database
-# DATABASES = {
-#     'default': {
-#         'ENGINE': 'mssql',
-#         'NAME': 'seminar',
-#         'HOST': 'localhost',
-#         'OPTIONS': {
-#             'driver': 'ODBC Driver 17 for SQL Server',
-#             'trusted_connection': 'yes',
-#         },
-#     }
-# Backup Database
-# DATABASES = {
-#     'default': {
-#         'ENGINE': 'mssql',
-#         'NAME': 'seminar',              # Database name
-#         'USER': 'seminar',              # SQL Server username
-#         'PASSWORD': 'seminar',          # SQL Server password
-#         'HOST': '72.190.10.217',        # Remote server IP
-#         'PORT': '',                     # Default port (1433) will be used
-#         'OPTIONS': {
-#             'driver': 'ODBC Driver 17 for SQL Server',  # ODBC driver
-#         },
-#     }
-# }
 DATABASES = {
     'default': {
         'ENGINE': 'django.db.backends.sqlite3',
@@ -116,11 +83,12 @@ DATABASES = {
         'PASSWORD': 'seminar',
         'OPTIONS': {
             'driver': 'ODBC Driver 17 for SQL Server',
-            'timeout': 30,  # Set a 30-second timeout
+            'extra_params': 'MARS_Connection=yes;',  # Enable Multiple Active Result Sets
         },
+        'CONN_MAX_AGE': 600,  # Keep connections alive for 10 minutes
+        'CONN_HEALTH_CHECKS': True,  # Enable health checks for connection pooling
     }
 }
-
 # Password validation
 # https://docs.djangoproject.com/en/5.2/ref/settings/#auth-password-validators
 

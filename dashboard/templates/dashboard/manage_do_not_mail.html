@@ -32,18 +32,44 @@
 </head>
 <body>
     <div class="container">
-        <h5>Search:</h5>
-        <form method="GET">
+        {% if messages %}
+            {% for message in messages %}
+                <div class="alert {% if message.tags == 'success' %}alert-success{% elif message.tags == 'error' %}alert-danger{% else %}alert-info{% endif %}">
+                    {{ message }}
+                </div>
+            {% endfor %}
+        {% endif %} 
+
+        <h5>Search Records:</h5>
+        <form method="GET" action="{% url 'manage_do_not_mail' %}">
             <div class="mb-3">
-                <input type="text" class="form-control" name="search" placeholder="" value="{{ search_query }}">
+                <label for="region" class="form-label">Region:</label>
+                <select name="region" id="region" class="form-select" required>
+                    <option value="">Select a Region</option>
+                    {% for region in all_regions %}
+                        <option value="{{ region.name }}" {% if selected_region == region.name %}selected{% endif %}>
+                            {{ region.name }}
+                        </option>
+                    {% endfor %}
+                </select>
             </div>
-            <button type="submit" class="btn btn-primary">Search</button>
+            <div class="mb-3">
+                <label for="ids" class="form-label">Record IDs (comma-separated, e.g., 89987,89988):</label>
+                <input type="text" class="form-control" name="ids" id="ids" value="{{ selected_ids }}" placeholder="Enter record IDs" required>
+            </div>
+            <button type="submit" class="btn btn-primary">Fetch Records</button>
             <a href="{% url 'manage_do_not_mail' %}" class="btn btn-secondary">Reset</a>
-            <button type="button" class="btn btn-secondary">Mark (DoNotMail)</button>
-            <a href="{% url 'dashboard' %}" class="manage-do-not-mail">Back to Main Page</a>
         </form>
 
-        <table class="table table-bordered mt-3">
+        <form method="POST" action="{% url 'manage_do_not_mail' %}">
+            {% csrf_token %}
+            <!-- Hidden fields to pass region and ids to POST -->
+            <input type="hidden" name="region" value="{{ selected_region }}">
+            <input type="hidden" name="ids" value="{{ selected_ids }}">
+            <button type="submit" class="btn btn-secondary mt-2">Mark (DoNotMail)</button>
+            <a href="{% url 'dashboard' %}" class="manage-do-not-mail">Back to Main Page</a>
+
+            <table class="table table-bordered mt-3">
             <thead>
                 <tr>
                     <th>Region</th>
@@ -58,21 +84,26 @@
                 </tr>
             </thead>
             <tbody>
-                {% for county in counties %}
+                {% for record in records %}
                 <tr>
-                    <td>{{ county.name }}</td>
-                    <td>{{ county.name }}</td>
-                    <td>-</td>
-                    <td>-</td>
-                    <td>-</td>
-                    <td>-</td>
+                    <td>{{ record.Region|default:"-" }}</td>
+                    <td>{{ record.Name|default:"-" }}</td>
+                    <td>{{ record.Owner|default:"-" }}</td>
+                    <td>{{ record.Address|default:"-" }}</td>
+                    <td>{{ record.City|default:"-" }}</td>
+                    <td>{{ record.State|default:"-" }}</td>
                     <td>
-                        <input type="checkbox" name="select_{{ county.id }}">
+                        <input type="checkbox" name="select_{{ record.Id }}" value="on">
                     </td>
+                </tr>
+                {% empty %}
+                <tr>
+                    <td colspan="7">Please select a region and enter at least one record ID to fetch records.</td>
                 </tr>
                 {% endfor %}
             </tbody>
         </table>
+        </form>
     </div>
     <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/js/bootstrap.bundle.min.js"></script>
     <script>
